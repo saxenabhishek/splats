@@ -132,53 +132,179 @@ function createWorker(self) {
     self.postMessage({ texdata, texwidth, texheight }, [texdata.buffer]);
   }
 
-  function runSort(viewProj) {
+  // GPU Bitonic Sort 
+  // Separate keys[] and vals[] buffers works for any N.
+  // Sorts ascending (small depth = near = drawn first) to match the
+  // front-to-back ONE_MINUS_DST_ALPHA blend mode in the WebGL renderer.
+  let gpuDevice = null;
+  let gpuPipeline = null;
+  let gpuKeysBuffer = null;
+  let gpuIdxBuffer = null;
+  let gpuReadback = null;
+  let gpuUniform = null;
+  let gpuPaddedN = 0;
+
+  const BITONIC_WGSL = /* wgsl */ `
+    struct Uni { n: u32, step: u32, subStep: u32 };
+
+    @group(0) @binding(0) var<storage, read_write> keys: array<u32>;
+    @group(0) @binding(1) var<storage, read_write> vals: array<u32>;
+    @group(0) @binding(2) var<uniform>             uni:  Uni;
+
+    @compute @workgroup_size(256)
+    fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+      let i = gid.x;
+      if (i >= uni.n / 2u) { return; }
+
+      let block    = i / uni.subStep;
+      let posInBlk = i % uni.subStep;
+      let left     = block * uni.subStep * 2u + posInBlk;
+      let right    = left + uni.subStep;
+      if (right >= uni.n) { return; }
+
+      // ascending within even blocks → front-to-back (nearest first)
+      let ascending = ((left / uni.step) % 2u) == 0u;
+
+      let ka = keys[left];  let kb = keys[right];
+      if ((ka > kb) == ascending) {
+        keys[left] = kb;  keys[right] = ka;
+        let va = vals[left]; let vb = vals[right];
+        vals[left] = vb;  vals[right] = va;
+      }
+    }
+  `;
+
+  async function initGPU() {
+    if (!navigator.gpu) throw new Error("WebGPU not supported in this worker.");
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error("No WebGPU adapter found.");
+    gpuDevice = await adapter.requestDevice();
+    const mod = gpuDevice.createShaderModule({ code: BITONIC_WGSL });
+    gpuPipeline = gpuDevice.createComputePipeline({
+      layout: "auto",
+      compute: { module: mod, entryPoint: "main" },
+    });
+    gpuUniform = gpuDevice.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  function ensureGPUBuffers(paddedN) {
+    if (paddedN <= gpuPaddedN) return;
+    gpuKeysBuffer?.destroy();
+    gpuIdxBuffer?.destroy();
+    gpuReadback?.destroy();
+    const STORAGE =
+      GPUBufferUsage.STORAGE |
+      GPUBufferUsage.COPY_SRC |
+      GPUBufferUsage.COPY_DST;
+    gpuKeysBuffer = gpuDevice.createBuffer({
+      size: paddedN * 4,
+      usage: STORAGE,
+    });
+    gpuIdxBuffer = gpuDevice.createBuffer({
+      size: paddedN * 4,
+      usage: STORAGE,
+    });
+    gpuReadback = gpuDevice.createBuffer({
+      size: paddedN * 4,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    gpuPaddedN = paddedN;
+  }
+
+  function nextPow2(n) {
+    let p = 1;
+    while (p < n) p <<= 1;
+    return p;
+  }
+
+  async function runSort(viewProj) {
     if (!buffer) return;
     const f_buffer = new Float32Array(buffer);
+
     if (lastVertexCount == vertexCount) {
-      let dot =
+      const dot =
         lastProj[2] * viewProj[2] +
         lastProj[6] * viewProj[6] +
         lastProj[10] * viewProj[10];
-      if (Math.abs(dot - 1) < 0.01) {
-        return;
-      }
+      if (Math.abs(dot - 1) < 0.01) return;
     } else {
       generateTexture();
       lastVertexCount = vertexCount;
     }
 
-    console.time("sort");
-    let maxDepth = -Infinity;
-    let minDepth = Infinity;
-    let sizeList = new Int32Array(vertexCount);
+    // Step 1: compute normalised depth keys on CPU
+    let maxDepth = -Infinity,
+      minDepth = Infinity;
+    const rawDepths = new Float32Array(vertexCount);
     for (let i = 0; i < vertexCount; i++) {
-      let depth =
-        ((viewProj[2] * f_buffer[8 * i + 0] +
-          viewProj[6] * f_buffer[8 * i + 1] +
-          viewProj[10] * f_buffer[8 * i + 2]) *
-          4096) |
-        0;
-      sizeList[i] = depth;
-      if (depth > maxDepth) maxDepth = depth;
-      if (depth < minDepth) minDepth = depth;
+      const d =
+        viewProj[2] * f_buffer[8 * i + 0] +
+        viewProj[6] * f_buffer[8 * i + 1] +
+        viewProj[10] * f_buffer[8 * i + 2];
+      rawDepths[i] = d;
+      if (d > maxDepth) maxDepth = d;
+      if (d < minDepth) minDepth = d;
     }
 
-    // This is a 16 bit single-pass counting sort
-    let depthInv = (256 * 256 - 1) / (maxDepth - minDepth);
-    let counts0 = new Uint32Array(256 * 256);
-    for (let i = 0; i < vertexCount; i++) {
-      sizeList[i] = ((sizeList[i] - minDepth) * depthInv) | 0;
-      counts0[sizeList[i]]++;
-    }
-    let starts0 = new Uint32Array(256 * 256);
-    for (let i = 1; i < 256 * 256; i++)
-      starts0[i] = starts0[i - 1] + counts0[i - 1];
-    depthIndex = new Uint32Array(vertexCount);
-    for (let i = 0; i < vertexCount; i++)
-      depthIndex[starts0[sizeList[i]]++] = i;
+    const range = maxDepth - minDepth || 1;
+    const paddedN = nextPow2(vertexCount);
 
-    console.timeEnd("sort");
+    // Keys: depth normalised. Padding fills with max value
+    const keys = new Uint32Array(paddedN).fill(0xffffffff);
+    const idxs = new Uint32Array(paddedN).fill(0);
+    for (let i = 0; i < vertexCount; i++) {
+      keys[i] = (((rawDepths[i] - minDepth) / range) * 0xffffffff) >>> 0;
+      idxs[i] = i;
+    }
+
+    //  Step 2:
+    if (!gpuDevice) await initGPU();
+    ensureGPUBuffers(paddedN);
+
+    gpuDevice.queue.writeBuffer(gpuKeysBuffer, 0, keys);
+    gpuDevice.queue.writeBuffer(gpuIdxBuffer, 0, idxs);
+
+    const bindGroup = gpuDevice.createBindGroup({
+      layout: gpuPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: gpuKeysBuffer } },
+        { binding: 1, resource: { buffer: gpuIdxBuffer } },
+        { binding: 2, resource: { buffer: gpuUniform } },
+      ],
+    });
+
+    const workgroups = Math.ceil(paddedN / 2 / 256);
+
+    for (let step = 1; step <= paddedN; step <<= 1) {
+      for (let subStep = step; subStep >= 1; subStep >>= 1) {
+        gpuDevice.queue.writeBuffer(
+          gpuUniform,
+          0,
+          new Uint32Array([paddedN, step, subStep]),
+        );
+        const enc = gpuDevice.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(gpuPipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(workgroups);
+        pass.end();
+        gpuDevice.queue.submit([enc.finish()]);
+      }
+    }
+
+    // Copy sorted index buffer to mappable readback
+    const copyEnc = gpuDevice.createCommandEncoder();
+    copyEnc.copyBufferToBuffer(gpuIdxBuffer, 0, gpuReadback, 0, paddedN * 4);
+    gpuDevice.queue.submit([copyEnc.finish()]);
+
+    // read back sorted indices
+    await gpuReadback.mapAsync(GPUMapMode.READ);
+    const mapped = new Uint32Array(gpuReadback.getMappedRange());
+    depthIndex = new Uint32Array(mapped.subarray(0, vertexCount));
+    gpuReadback.unmap();
 
     lastProj = viewProj;
     self.postMessage({ depthIndex, viewProj, vertexCount }, [
@@ -334,13 +460,12 @@ function createWorker(self) {
     if (!sortRunning) {
       sortRunning = true;
       let lastView = viewProj;
-      runSort(lastView);
-      setTimeout(() => {
+      runSort(lastView).finally(() => {
         sortRunning = false;
         if (lastView !== viewProj) {
           throttledSort();
         }
-      }, 0);
+      });
     }
   };
 
@@ -485,9 +610,9 @@ async function main() {
   const camid = document.getElementById("camid");
 
   // metrics timing state
-  let sortSentAt = 0;      // performance.now() when view was posted to worker
-  let lastSortMs = 0;      // round-trip time for last sort (sort + transfer)
-  let lastRenderMs = 0;    // time for the gl.drawArraysInstanced call
+  let sortSentAt = 0; // performance.now() when view was posted to worker
+  let lastSortMs = 0; // round-trip time for last sort (sort + transfer)
+  let lastRenderMs = 0
   let totalSplats = Math.floor(splatData.length / rowLength);
 
   let projectionMatrix;
@@ -1061,12 +1186,12 @@ async function main() {
     // update metrics overlay
     if (window.metrics) {
       window.metrics.update({
-        frameMs:  now - lastFrame,
-        sortMs:   lastSortMs,
+        frameMs: now - lastFrame,
+        sortMs: lastSortMs,
         renderMs: lastRenderMs,
-        total:    totalSplats,
-        drawn:    vertexCount,
-        pipeline: "CPU radix sort (baseline)",
+        total: totalSplats,
+        drawn: vertexCount,
+        pipeline: "",
       });
     }
     if (isNaN(currentCameraIndex)) {

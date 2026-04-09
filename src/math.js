@@ -117,6 +117,45 @@ export function rotate4(a, rad, x, y, z) {
   ];
 }
 
+// Vector helpers
+
+function sub(a, b) {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+function normalize(v) {
+  const len = Math.hypot(v[0], v[1], v[2]);
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+function cross(a, b) {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+export function makeLevelCamera(position, target, fx = 1159.59, fy = 1164.66) {
+  const forward = normalize(sub(target, position));
+
+  // If looking straight up/down, forward ≈ world-Y and cross product degenerates.
+  // Fall back to world-Z as the up hint in that edge case.
+  const worldUp = Math.abs(forward[1]) > 0.99 ? [0, 0, 1] : [0, 1, 0];
+
+  const right = normalize(cross(worldUp, forward));
+  const up    = cross(forward, right); // guaranteed orthogonal, no need to re-normalize
+
+  return {
+    position,
+    rotation: [right, up, forward],
+    fx,
+    fy,
+    width: 1959,
+    height: 1090,
+  };
+}
+
 export function translate4(a, x, y, z) {
   return [
     ...a.slice(0, 12),

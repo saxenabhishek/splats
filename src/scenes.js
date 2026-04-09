@@ -19,37 +19,37 @@ export const scenes = [
   {
     label: "Train (32.8 MB 1.1M splats)",
     url: CAKEWALK + "train.splat",
-    group: "cakewalk ",
+    group: "cakewalk",
   },
   {
     label: "Room (51 MB 1.7M splats)",
     url: CAKEWALK + "room.splat",
-    group: "cakewalk ",
+    group: "cakewalk",
   },
   {
     label: "Truck (81.3 MB 2.7M splats)",
     url: CAKEWALK + "truck.splat",
-    group: "cakewalk ",
+    group: "cakewalk",
   },
   {
     label: "Treehill (121 MB 4M splats)",
     url: CAKEWALK + "treehill.splat",
-    group: "cakewalk ",
+    group: "cakewalk",
   },
   {
     label: "Stump (159 MB 5.2M splats)",
     url: CAKEWALK + "stump.splat",
-    group: "cakewalk ",
+    group: "cakewalk",
   },
   {
     label: "Bicycle (196 MB 6.4M splats)",
     url: CAKEWALK + "bicycle.splat",
-    group: "cakewalk ",
+    group: "cakewalk",
   },
   {
     label: "Garden (187 MB 6.1M splats)",
     url: CAKEWALK + "garden.splat",
-    group: "cakewalk ",
+    group: "cakewalk",
   },
 
   // Good variety of sizes and subject matter.
