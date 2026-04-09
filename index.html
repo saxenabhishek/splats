@@ -159,7 +159,56 @@
         background: #ff9d0d;
       }
 
-      /* ── Metrics overlay ───────────────────────────────────────────────── */
+      /*  Scene picker  */
+      #scene-picker {
+        position: absolute;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      #scene-select {
+        background: rgba(10, 10, 14, 0.78);
+        color: #e0ddd6;
+        border: 0.5px solid rgba(255, 255, 255, 0.15);
+        border-radius: 6px;
+        padding: 5px 10px;
+        font-size: 12px;
+        font-family: monospace;
+        cursor: pointer;
+        max-width: 300px;
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+      }
+
+      #scene-select:focus {
+        outline: none;
+        border-color: rgba(255, 255, 255, 0.35);
+      }
+
+      #scene-load-btn {
+        background: rgba(83, 74, 183, 0.5);
+        color: #cecbf6;
+        border: 0.5px solid rgba(175, 169, 236, 0.3);
+        border-radius: 6px;
+        padding: 5px 12px;
+        font-size: 12px;
+        font-family: monospace;
+        cursor: pointer;
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        transition: background 0.15s;
+      }
+
+      #scene-load-btn:hover {
+        background: rgba(83, 74, 183, 0.75);
+      }
+
+      /* Metrics overlay  */
       #metrics-panel {
         position: absolute;
         bottom: 14px;
@@ -311,6 +360,55 @@
 
     <div id="progress"></div>
     <div id="message"></div>
+
+    <!-- Scene picker -->
+    <div id="scene-picker">
+      <select id="scene-select"></select>
+      <button id="scene-load-btn">Load</button>
+    </div>
+
+    <script type="module">
+      import { scenes } from "./src/scenes.js";
+
+      const select = document.getElementById("scene-select");
+      const btn    = document.getElementById("scene-load-btn");
+
+      // Build grouped <optgroup> elements
+      const groups = {};
+      for (const scene of scenes) {
+        if (!groups[scene.group]) groups[scene.group] = [];
+        groups[scene.group].push(scene);
+      }
+
+      for (const [groupName, items] of Object.entries(groups)) {
+        const og = document.createElement("optgroup");
+        og.label = groupName;
+        for (const scene of items) {
+          const opt = document.createElement("option");
+          opt.value = scene.url;
+          opt.textContent = scene.label;
+          og.appendChild(opt);
+        }
+        select.appendChild(og);
+      }
+
+      // Load on button click — update the URL param and reload
+      btn.addEventListener("click", () => {
+        const url = select.value;
+        if (!url) return;
+        const params = new URLSearchParams(location.search);
+        params.set("url", url);
+        // Clear any saved camera hash so the new scene starts fresh
+        location.href = location.pathname + "?" + params.toString();
+      });
+
+      // Reflect current URL param selection in the dropdown on page load
+      const current = new URLSearchParams(location.search).get("url");
+      if (current) {
+        const match = select.querySelector(`option[value="${CSS.escape(current)}"]`);
+        if (match) match.selected = true;
+      }
+    </script>
 
     <div class="scene" id="spinner">
       <div class="cube-wrapper">
