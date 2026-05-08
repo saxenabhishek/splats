@@ -320,6 +320,43 @@
         padding: 1px 6px;
         margin-top: 3px;
       }
+
+      /* Sort / cull button groups */
+      #metrics-panel .mp-btn-group {
+        display: flex;
+        gap: 3px;
+        margin-bottom: 5px;
+      }
+
+      #metrics-panel .mp-btn {
+        flex: 1;
+        background: rgba(255, 255, 255, 0.04);
+        color: #666360;
+        border: 0.5px solid rgba(255, 255, 255, 0.08);
+        border-radius: 4px;
+        padding: 3px 0;
+        font-size: 9px;
+        font-family: monospace;
+        letter-spacing: 0.03em;
+        cursor: pointer;
+        transition: background 0.12s, color 0.12s;
+      }
+
+      #metrics-panel .mp-btn:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.09);
+        color: #e0ddd6;
+      }
+
+      #metrics-panel .mp-btn.mp-btn-active {
+        background: rgba(83, 74, 183, 0.45);
+        color: #cecbf6;
+        border-color: rgba(175, 169, 236, 0.35);
+      }
+
+      #metrics-panel .mp-btn:disabled {
+        opacity: 0.28;
+        cursor: not-allowed;
+      }
     </style>
   </head>
   <body>
@@ -502,7 +539,23 @@
 
         <hr>
 
-        <div id="m-pipeline-badge" class="mp-pipeline">CPU sort (baseline)</div>
+        <hr>
+
+        <div class="mp-section-label">Sort</div>
+        <div class="mp-btn-group">
+          <button class="mp-btn" data-sort="cpu-radix">CPU Radix</button>
+          <button class="mp-btn mp-btn-active" data-sort="gpu-bitonic">GPU Bitonic</button>
+          <button class="mp-btn" data-sort="wsr" disabled title="Not implemented">WSR</button>
+        </div>
+
+        <div class="mp-section-label">Cull</div>
+        <div class="mp-btn-group">
+          <button class="mp-btn mp-btn-active" data-cull="none">None</button>
+          <button class="mp-btn" data-cull="aabb">AABB</button>
+          <button class="mp-btn" data-cull="obb" disabled title="Not implemented">OBB</button>
+        </div>
+
+        <div id="m-pipeline-badge" class="mp-pipeline">GPU Bitonic · no cull</div>
 
       </div>
     </div>

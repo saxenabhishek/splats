@@ -4,9 +4,13 @@
   "description": "WebGL 3D Gaussian Splatting viewer with GPU pipeline benchmarks",
   "type": "module",
   "scripts": {
-    "dev": "npx serve . --cors"
+    "dev": "npx serve . --cors",
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
   }
 }
