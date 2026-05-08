@@ -114,6 +114,7 @@
         align-items: center;
         justify-content: center;
       }
+      #spinner { pointer-events: none; }
       #message {
         font-weight: bold;
         font-size: large;
@@ -552,7 +553,7 @@
         <div class="mp-btn-group">
           <button class="mp-btn mp-btn-active" data-cull="none">None</button>
           <button class="mp-btn" data-cull="aabb">AABB</button>
-          <button class="mp-btn" data-cull="obb" disabled title="Not implemented">OBB</button>
+          <button class="mp-btn" data-cull="obb">OBB</button>
         </div>
 
         <div id="m-pipeline-badge" class="mp-pipeline">GPU Bitonic · no cull</div>

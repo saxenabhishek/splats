@@ -4,6 +4,7 @@
   "description": "WebGL 3D Gaussian Splatting viewer with GPU pipeline benchmarks",
   "type": "module",
   "scripts": {
+    "format": "prettier --write .",
     "dev": "npx serve . --cors",
     "test": "vitest run"
   },
@@ -11,6 +12,7 @@
     "node": ">=18"
   },
   "devDependencies": {
+    "prettier": "3.8.3",
     "vitest": "^3.0.0"
   }
 }

@@ -20,7 +20,7 @@ export const cameras = [
   makeLevelCamera([-R, H, R], CENTER), // 7 — back-left
 
   // Elevated views
-  makeLevelCamera([0, R, 0], CENTER), // 8 — top-down 
+  makeLevelCamera([0, R, 0], CENTER), // 8 — top-down
   makeLevelCamera([0, R / 2, -R * 1.5], CENTER), // 9 — raised front
 ];
 

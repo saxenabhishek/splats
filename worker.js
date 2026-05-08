@@ -1,9 +1,14 @@
 // Gaussian splat sort + cull worker (ES module).
 // Receives viewProj matrices, culls and depth-sorts splats, posts back a compact depthIndex.
 
-import { config } from './src/config.js';
-import { cpuRadixSort, depthToKey } from './src/sort.js';
-import { extractFrustumPlanes, sphereInFrustum } from './src/cull.js';
+import { config } from "./src/config.js";
+import { cpuRadixSort, depthToKey } from "./src/sort.js";
+import {
+  extractFrustumPlanes,
+  sphereInFrustum,
+  obbInFrustum,
+  quatToAxes,
+} from "./src/cull.js";
 
 let buffer;
 let vertexCount = 0;
@@ -32,7 +37,10 @@ function floatToHalf(float) {
     newExp = 0;
     frac |= 0x00800000;
     frac = frac >> (113 - exp);
-    if (frac & 0x01000000) { newExp = 1; frac = 0; }
+    if (frac & 0x01000000) {
+      newExp = 1;
+      frac = 0;
+    }
   } else if (exp < 142) {
     newExp = exp - 112;
   } else {
@@ -67,11 +75,7 @@ function generateTexture() {
     texdata_c[4 * (8 * i + 7) + 2] = u_buffer[32 * i + 24 + 2];
     texdata_c[4 * (8 * i + 7) + 3] = u_buffer[32 * i + 24 + 3];
 
-    let scale = [
-      f_buffer[8 * i + 3],
-      f_buffer[8 * i + 4],
-      f_buffer[8 * i + 5],
-    ];
+    let scale = [f_buffer[8 * i + 3], f_buffer[8 * i + 4], f_buffer[8 * i + 5]];
     let rot = [
       (u_buffer[32 * i + 28 + 0] - 128) / 128,
       (u_buffer[32 * i + 28 + 1] - 128) / 128,
@@ -171,8 +175,8 @@ function ensureGPUBuffers(paddedN) {
   const STORAGE =
     GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
   gpuKeysBuffer = gpuDevice.createBuffer({ size: paddedN * 4, usage: STORAGE });
-  gpuIdxBuffer  = gpuDevice.createBuffer({ size: paddedN * 4, usage: STORAGE });
-  gpuReadback   = gpuDevice.createBuffer({
+  gpuIdxBuffer = gpuDevice.createBuffer({ size: paddedN * 4, usage: STORAGE });
+  gpuReadback = gpuDevice.createBuffer({
     size: paddedN * 4,
     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
   });
@@ -191,12 +195,13 @@ function nextPow2(n) {
 // for all splats that pass the current cull test. Only [0..count) is valid.
 function buildVisibleArrays(f_buffer) {
   // First pass: compute raw depths and their range.
-  let minDepth = Infinity, maxDepth = -Infinity;
+  let minDepth = Infinity,
+    maxDepth = -Infinity;
   const rawDepths = new Float32Array(vertexCount);
   for (let i = 0; i < vertexCount; i++) {
     const d =
-      viewProj[2]  * f_buffer[8 * i + 0] +
-      viewProj[6]  * f_buffer[8 * i + 1] +
+      viewProj[2] * f_buffer[8 * i + 0] +
+      viewProj[6] * f_buffer[8 * i + 1] +
       viewProj[10] * f_buffer[8 * i + 2];
     rawDepths[i] = d;
     if (d > maxDepth) maxDepth = d;
@@ -204,7 +209,10 @@ function buildVisibleArrays(f_buffer) {
   }
   const range = maxDepth - minDepth || 1;
 
-  const planes = config.cullMode === 'aabb' ? extractFrustumPlanes(viewProj) : null;
+  const cullOBB = config.cullMode === "obb";
+  const cullAABB = config.cullMode === "aabb";
+  const planes = cullAABB || cullOBB ? extractFrustumPlanes(viewProj) : null;
+  const u_buffer = cullOBB ? new Uint8Array(buffer) : null;
 
   // Second pass: cull and pack into compact arrays.
   const keys = new Uint32Array(vertexCount);
@@ -215,13 +223,32 @@ function buildVisibleArrays(f_buffer) {
       const cx = f_buffer[8 * i + 0];
       const cy = f_buffer[8 * i + 1];
       const cz = f_buffer[8 * i + 2];
-      // Bounding sphere: radius = max axis scale × 3σ coverage.
-      const r = Math.max(
-        f_buffer[8 * i + 3],
-        f_buffer[8 * i + 4],
-        f_buffer[8 * i + 5],
-      ) * 3;
-      if (!sphereInFrustum(planes, cx, cy, cz, r)) continue;
+      const sx = f_buffer[8 * i + 3];
+      const sy = f_buffer[8 * i + 4];
+      const sz = f_buffer[8 * i + 5];
+      if (cullOBB) {
+        const off = 32 * i + 28;
+        const r0 = (u_buffer[off] - 128) / 128;
+        const r1 = (u_buffer[off + 1] - 128) / 128;
+        const r2 = (u_buffer[off + 2] - 128) / 128;
+        const r3 = (u_buffer[off + 3] - 128) / 128;
+        if (
+          !obbInFrustum(
+            planes,
+            cx,
+            cy,
+            cz,
+            quatToAxes(r0, r1, r2, r3),
+            sx * 3.5,
+            sy * 3.5,
+            sz * 3.5,
+          )
+        )
+          continue;
+      } else {
+        if (!sphereInFrustum(planes, cx, cy, cz, Math.max(sx, sy, sz) * 3.5))
+          continue;
+      }
     }
     keys[count] = depthToKey(rawDepths[i], minDepth, range);
     vals[count] = i;
@@ -243,7 +270,7 @@ async function sortGPUBitonic(keys, vals, count) {
   paddedVals.set(vals.subarray(0, count));
 
   gpuDevice.queue.writeBuffer(gpuKeysBuffer, 0, paddedKeys);
-  gpuDevice.queue.writeBuffer(gpuIdxBuffer,  0, paddedVals);
+  gpuDevice.queue.writeBuffer(gpuIdxBuffer, 0, paddedVals);
 
   const bindGroup = gpuDevice.createBindGroup({
     layout: gpuPipeline.getBindGroupLayout(0),
@@ -258,7 +285,9 @@ async function sortGPUBitonic(keys, vals, count) {
   for (let step = 1; step <= paddedN; step <<= 1) {
     for (let subStep = step; subStep >= 1; subStep >>= 1) {
       gpuDevice.queue.writeBuffer(
-        gpuUniform, 0, new Uint32Array([paddedN, step, subStep]),
+        gpuUniform,
+        0,
+        new Uint32Array([paddedN, step, subStep]),
       );
       const enc = gpuDevice.createCommandEncoder();
       const pass = enc.beginComputePass();
@@ -276,7 +305,9 @@ async function sortGPUBitonic(keys, vals, count) {
 
   await gpuReadback.mapAsync(GPUMapMode.READ);
   // Sorted real elements are at the front (padding 0xffffffff sorts to the end).
-  const result = new Uint32Array(gpuReadback.getMappedRange().slice(0, count * 4));
+  const result = new Uint32Array(
+    gpuReadback.getMappedRange().slice(0, count * 4),
+  );
   gpuReadback.unmap();
   return result;
 }
@@ -299,17 +330,21 @@ async function runSort(vp) {
   const configChanged =
     config.sortMethod !== lastSortMethod || config.cullMode !== lastCullMode;
   lastSortMethod = config.sortMethod;
-  lastCullMode   = config.cullMode;
+  lastCullMode = config.cullMode;
 
   if (lastVertexCount !== vertexCount) {
     generateTexture();
     lastVertexCount = vertexCount;
   } else if (!configChanged) {
     const dot =
-      lastProj[2]  * vp[2] +
-      lastProj[6]  * vp[6] +
-      lastProj[10] * vp[10];
-    if (Math.abs(dot - 1) < 0.01) return;
+      lastProj[2] * vp[2] + lastProj[6] * vp[6] + lastProj[10] * vp[10];
+    const dirUnchanged = Math.abs(dot - 1) < 0.01;
+    // Frustum depends on camera position, so check translation column when culling.
+    const posUnchanged =
+      Math.abs(lastProj[12] - vp[12]) < 0.001 &&
+      Math.abs(lastProj[13] - vp[13]) < 0.001 &&
+      Math.abs(lastProj[14] - vp[14]) < 0.001;
+    if (dirUnchanged && (config.cullMode === "none" || posUnchanged)) return;
   }
 
   const { keys, vals, count } = buildVisibleArrays(f_buffer);
@@ -324,7 +359,7 @@ async function runSort(vp) {
   }
 
   let depthIndex;
-  if (config.sortMethod === 'gpu-bitonic') {
+  if (config.sortMethod === "gpu-bitonic") {
     depthIndex = await sortGPUBitonic(keys, vals, count);
   } else {
     depthIndex = sortCPURadix(keys, vals, count);
@@ -364,10 +399,17 @@ function processPlyBuffer(inputBuffer) {
   const vertexCount = parseInt(/element vertex (\d+)\n/.exec(header)[1]);
   console.log("Vertex Count", vertexCount);
 
-  let row_offset = 0, offsets = {}, types = {};
+  let row_offset = 0,
+    offsets = {},
+    types = {};
   const TYPE_MAP = {
-    double: "getFloat64", int: "getInt32", uint: "getUint32",
-    float: "getFloat32", short: "getInt16", ushort: "getUint16", uchar: "getUint8",
+    double: "getFloat64",
+    int: "getInt32",
+    uint: "getUint32",
+    float: "getFloat32",
+    short: "getInt16",
+    ushort: "getUint16",
+    uchar: "getUint8",
   };
   for (let prop of header
     .slice(0, header_end_index)
@@ -381,14 +423,20 @@ function processPlyBuffer(inputBuffer) {
   }
   console.log("Bytes per row", row_offset, types, offsets);
 
-  let dataView = new DataView(inputBuffer, header_end_index + header_end.length);
+  let dataView = new DataView(
+    inputBuffer,
+    header_end_index + header_end.length,
+  );
   let row = 0;
-  const attrs = new Proxy({}, {
-    get(target, prop) {
-      if (!types[prop]) throw new Error(prop + " not found");
-      return dataView[types[prop]](row * row_offset + offsets[prop], true);
+  const attrs = new Proxy(
+    {},
+    {
+      get(target, prop) {
+        if (!types[prop]) throw new Error(prop + " not found");
+        return dataView[types[prop]](row * row_offset + offsets[prop], true);
+      },
     },
-  });
+  );
 
   console.time("calculate importance");
   let sizeList = new Float32Array(vertexCount);
@@ -397,7 +445,9 @@ function processPlyBuffer(inputBuffer) {
     sizeIndex[row] = row;
     if (!types["scale_0"]) continue;
     const size =
-      Math.exp(attrs.scale_0) * Math.exp(attrs.scale_1) * Math.exp(attrs.scale_2);
+      Math.exp(attrs.scale_0) *
+      Math.exp(attrs.scale_1) *
+      Math.exp(attrs.scale_2);
     const opacity = 1 / (1 + Math.exp(-attrs.opacity));
     sizeList[row] = size * opacity;
   }
@@ -415,12 +465,23 @@ function processPlyBuffer(inputBuffer) {
     row = sizeIndex[j];
     const position = new Float32Array(buffer, j * rowLength, 3);
     const scales = new Float32Array(buffer, j * rowLength + 4 * 3, 3);
-    const rgba = new Uint8ClampedArray(buffer, j * rowLength + 4 * 3 + 4 * 3, 4);
-    const rot = new Uint8ClampedArray(buffer, j * rowLength + 4 * 3 + 4 * 3 + 4, 4);
+    const rgba = new Uint8ClampedArray(
+      buffer,
+      j * rowLength + 4 * 3 + 4 * 3,
+      4,
+    );
+    const rot = new Uint8ClampedArray(
+      buffer,
+      j * rowLength + 4 * 3 + 4 * 3 + 4,
+      4,
+    );
 
     if (types["scale_0"]) {
       const qlen = Math.sqrt(
-        attrs.rot_0 ** 2 + attrs.rot_1 ** 2 + attrs.rot_2 ** 2 + attrs.rot_3 ** 2,
+        attrs.rot_0 ** 2 +
+          attrs.rot_1 ** 2 +
+          attrs.rot_2 ** 2 +
+          attrs.rot_3 ** 2,
       );
       rot[0] = (attrs.rot_0 / qlen) * 128 + 128;
       rot[1] = (attrs.rot_1 / qlen) * 128 + 128;
@@ -430,8 +491,13 @@ function processPlyBuffer(inputBuffer) {
       scales[1] = Math.exp(attrs.scale_1);
       scales[2] = Math.exp(attrs.scale_2);
     } else {
-      scales[0] = 0.01; scales[1] = 0.01; scales[2] = 0.01;
-      rot[0] = 255; rot[1] = 0; rot[2] = 0; rot[3] = 0;
+      scales[0] = 0.01;
+      scales[1] = 0.01;
+      scales[2] = 0.01;
+      rot[0] = 255;
+      rot[1] = 0;
+      rot[2] = 0;
+      rot[3] = 0;
     }
 
     position[0] = attrs.x;

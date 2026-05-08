@@ -144,7 +144,7 @@ export function makeLevelCamera(position, target, fx = 1159.59, fy = 1164.66) {
   const worldUp = Math.abs(forward[1]) > 0.99 ? [0, 0, 1] : [0, 1, 0];
 
   const right = normalize(cross(worldUp, forward));
-  const up    = cross(forward, right); // guaranteed orthogonal, no need to re-normalize
+  const up = cross(forward, right); // guaranteed orthogonal, no need to re-normalize
 
   return {
     position,
